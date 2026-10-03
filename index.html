@@ -92,6 +92,16 @@
       box-shadow: 0 0 0 3px var(--glow);
     }
 
+    /* Fix Calendar Icon for Dark Theme */
+    input[type="date"]::-webkit-calendar-picker-indicator {
+      filter: invert(1);
+      opacity: 0.7;
+      cursor: pointer;
+    }
+    input[type="date"]::-webkit-calendar-picker-indicator:hover {
+      opacity: 1;
+    }
+
     textarea {
       resize: vertical;
       min-height: 70px;
@@ -153,18 +163,6 @@
       width: auto;
       padding: 6px 14px;
       font-size: 0.85rem;
-    }
-
-    /* Date and Input Controls */
-    .date-row {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-
-    .date-row input[type="date"] {
-      flex: 1;
     }
 
     .input-card {
@@ -252,6 +250,9 @@
       margin-top: 8px;
       white-space: pre-line;
       word-break: break-word;
+      background: rgba(0,0,0,0.15);
+      padding: 10px;
+      border-radius: 8px;
     }
 
     .task-meta {
@@ -298,11 +299,15 @@
       font-weight: 600;
       display: inline-block;
       margin-bottom: 6px;
+      margin-right: 6px;
     }
 
     .badge-pending { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); }
     .badge-in_progress { background: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); }
     .badge-completed { background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    
+    .badge-date { background: rgba(255, 255, 255, 0.1); color: var(--text-main); border: 1px solid rgba(255, 255, 255, 0.2); }
+    .badge-overdue { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); }
   </style>
 </head>
 <body>
@@ -315,13 +320,11 @@
 
     <div class="form-group">
       <label>Email Address</label>
-      <!-- Auto-complete disabled to prevent browser saving -->
       <input type="email" id="auth-email" placeholder="name@example.com" autocomplete="off" required />
     </div>
 
     <div class="form-group" id="pin-group">
       <label>6-Digit PIN</label>
-      <!-- Auto-complete set to new-password to block auto-fill -->
       <input type="password" id="auth-pin" maxlength="6" pattern="[0-9]{6}" inputmode="numeric" placeholder="••••••" autocomplete="new-password" />
     </div>
 
@@ -345,12 +348,6 @@
         <button id="logout-btn" class="btn-secondary">Sign Out</button>
       </div>
 
-      <!-- Date Selection -->
-      <div class="date-row">
-        <label style="margin: 0; min-width: 90px;">Task Date:</label>
-        <input type="date" id="selected-date" />
-      </div>
-
       <!-- Task Creator -->
       <div class="input-card">
         <input type="text" id="task-title-input" placeholder="What needs to be done?" style="margin-bottom: 8px;" />
@@ -359,9 +356,17 @@
           <textarea id="task-desc-input" placeholder="Add additional details or notes (optional)..."></textarea>
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <button type="button" id="toggle-desc-btn" class="btn-text">+ Add Description</button>
-          <button id="add-task-btn" style="width: 120px;">Save Task</button>
+        <div id="date-container" class="hidden" style="margin-bottom: 10px;">
+          <label style="margin-bottom: 4px;">Target Due Date:</label>
+          <input type="date" id="task-date-input" />
+        </div>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center;">
+          <div style="display: flex; gap: 8px;">
+            <button type="button" id="toggle-desc-btn" class="btn-text">+ Add Description</button>
+            <button type="button" id="toggle-date-btn" class="btn-text">+ Add Due Date</button>
+          </div>
+          <button id="add-task-btn" style="width: auto; padding: 10px 24px;">Save Task</button>
         </div>
       </div>
 
@@ -397,7 +402,6 @@
     collection, 
     addDoc, 
     query, 
-    where, 
     onSnapshot, 
     doc, 
     updateDoc, 
@@ -417,40 +421,30 @@
   const auth = getAuth(app);
   const db = getFirestore(app);
 
-  // Destroy session on page refresh or tab close
-  setPersistence(auth, inMemoryPersistence).catch((error) => {
-    console.error("Auth persistence error:", error);
-  });
+  // Destroy session on page refresh
+  setPersistence(auth, inMemoryPersistence).catch((error) => console.error(error));
 
   let currentUser = null;
   let unsubscribeTasks = null;
   let currentFilter = "all";
   let authMode = "login";
 
-  // Set default to today in YYYY-MM-DD local time
+  // Helpers for Dates
   const getLocalDateString = () => {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   };
 
-  const dateInput = document.getElementById("selected-date");
-  dateInput.value = getLocalDateString();
-
-  // Formatting helper for timestamps
   const formatDateTime = (timestamp) => {
     if (!timestamp) return "N/A";
-    const d = new Date(timestamp);
-    return d.toLocaleDateString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true
+    return new Date(timestamp).toLocaleDateString("en-IN", {
+      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true
     });
+  };
+
+  const formatDateOnly = (dateString) => {
+    if (!dateString) return "";
+    return new Date(dateString).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
   };
 
   // UI Elements
@@ -465,18 +459,23 @@
   const toggleText = document.getElementById("toggle-text");
   const pinGroup = document.getElementById("pin-group");
   const userDisplay = document.getElementById("user-display");
+  
   const taskTitleInput = document.getElementById("task-title-input");
   const taskDescInput = document.getElementById("task-desc-input");
+  const taskDateInput = document.getElementById("task-date-input");
+  
   const toggleDescBtn = document.getElementById("toggle-desc-btn");
+  const toggleDateBtn = document.getElementById("toggle-date-btn");
   const descContainer = document.getElementById("desc-container");
+  const dateContainer = document.getElementById("date-container");
+  
   const addTaskBtn = document.getElementById("add-task-btn");
   const taskList = document.getElementById("task-list");
   const logoutBtn = document.getElementById("logout-btn");
 
-  // Toggle Description Box
+  // Input Toggles
   toggleDescBtn.addEventListener("click", () => {
-    const isHidden = descContainer.classList.contains("hidden");
-    if (isHidden) {
+    if (descContainer.classList.contains("hidden")) {
       descContainer.classList.remove("hidden");
       toggleDescBtn.innerText = "- Remove Description";
       taskDescInput.focus();
@@ -484,6 +483,18 @@
       descContainer.classList.add("hidden");
       toggleDescBtn.innerText = "+ Add Description";
       taskDescInput.value = "";
+    }
+  });
+
+  toggleDateBtn.addEventListener("click", () => {
+    if (dateContainer.classList.contains("hidden")) {
+      dateContainer.classList.remove("hidden");
+      toggleDateBtn.innerText = "- Remove Due Date";
+      taskDateInput.value = getLocalDateString();
+    } else {
+      dateContainer.classList.add("hidden");
+      toggleDateBtn.innerText = "+ Add Due Date";
+      taskDateInput.value = "";
     }
   });
 
@@ -503,7 +514,7 @@
     }
   });
 
-  // Auth Mode Toggles
+  // Auth Modes
   toggleLink.addEventListener("click", () => {
     if (authMode === "login") {
       authMode = "signup";
@@ -534,13 +545,11 @@
     toggleLink.innerText = "Sign In";
   });
 
-  // Handle Authentication Submission
+  // Auth Submit
   authSubmitBtn.addEventListener("click", async () => {
     const email = authEmail.value.trim();
     const pin = authPin.value.trim();
-
     if (!email) return alert("Please enter your email.");
-
     try {
       if (authMode === "signup") {
         if (pin.length !== 6 || isNaN(pin)) return alert("PIN must be exactly 6 numeric digits.");
@@ -562,16 +571,13 @@
     }
   });
 
-  // Manual Sign Out with Input Clearing
   logoutBtn.addEventListener("click", async () => {
     await signOut(auth);
     authEmail.value = "";
     authPin.value = "";
   });
 
-  // Date and Filter Listeners
-  dateInput.addEventListener("change", loadTasks);
-
+  // Filters
   document.querySelectorAll(".pill").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".pill").forEach(b => b.classList.remove("active"));
@@ -585,78 +591,89 @@
   addTaskBtn.addEventListener("click", async () => {
     const title = taskTitleInput.value.trim();
     const desc = taskDescInput.value.trim();
-    const date = dateInput.value;
-    if (!title || !date || !currentUser) return;
+    const dueDate = !dateContainer.classList.contains("hidden") ? taskDateInput.value : null;
+    
+    if (!title || !currentUser) return alert("Task title cannot be empty.");
 
     try {
       const now = Date.now();
       await addDoc(collection(db, `users/${currentUser.uid}/tasks`), {
         title: title,
         description: desc || "",
-        date: date,
+        dueDate: dueDate,
         status: "pending",
         createdAt: now,
         modifiedAt: now
       });
 
+      // Reset Form
       taskTitleInput.value = "";
       taskDescInput.value = "";
+      taskDateInput.value = "";
       if (!descContainer.classList.contains("hidden")) {
         descContainer.classList.add("hidden");
         toggleDescBtn.innerText = "+ Add Description";
+      }
+      if (!dateContainer.classList.contains("hidden")) {
+        dateContainer.classList.add("hidden");
+        toggleDateBtn.innerText = "+ Add Due Date";
       }
     } catch (err) {
       alert("Error adding task: " + err.message);
     }
   });
 
-  // Load and Render Tasks with Chronological Sorting
+  // Render Tasks
   function loadTasks() {
     if (!currentUser) return;
     if (unsubscribeTasks) unsubscribeTasks();
 
-    const selectedDate = dateInput.value;
     const taskCol = collection(db, `users/${currentUser.uid}/tasks`);
-    const q = query(taskCol, where("date", "==", selectedDate));
+    const q = query(taskCol); // Fetch all tasks regardless of date
 
     unsubscribeTasks = onSnapshot(q, (snapshot) => {
       let rawTasks = [];
       snapshot.forEach(docSnap => rawTasks.push({ id: docSnap.id, ...docSnap.data() }));
 
-      // Update Pill Count Indicators
+      // Update Counts
       document.getElementById("count-all").innerText = rawTasks.length;
       document.getElementById("count-pending").innerText = rawTasks.filter(t => t.status === "pending").length;
       document.getElementById("count-progress").innerText = rawTasks.filter(t => t.status === "in_progress").length;
       document.getElementById("count-completed").innerText = rawTasks.filter(t => t.status === "completed").length;
 
-      // Filter
+      // Filter and Sort Newest First
       let filteredTasks = currentFilter === "all" ? rawTasks : rawTasks.filter(t => t.status === currentFilter);
-
-      // Chronological sort: Newest to Oldest (by modifiedAt or createdAt)
-      filteredTasks.sort((a, b) => {
-        const timeA = a.modifiedAt || a.createdAt || 0;
-        const timeB = b.modifiedAt || b.createdAt || 0;
-        return timeB - timeA;
-      });
+      filteredTasks.sort((a, b) => (b.modifiedAt || b.createdAt || 0) - (a.modifiedAt || a.createdAt || 0));
 
       taskList.innerHTML = "";
 
       if (filteredTasks.length === 0) {
-        taskList.innerHTML = `<p class="muted" style="text-align: center; padding: 24px;">No tasks found for this view.</p>`;
+        taskList.innerHTML = `<p class="muted" style="text-align: center; padding: 24px;">No tasks found.</p>`;
         return;
       }
+
+      const todayStr = getLocalDateString();
 
       filteredTasks.forEach(task => {
         const item = document.createElement("div");
         item.className = "task-card";
 
-        const badgeClass = `badge-${task.status}`;
         const statusLabel = task.status === "completed" ? "Completed" : (task.status === "in_progress" ? "In Progress" : "Pending");
+        
+        let dateBadge = "";
+        if (task.dueDate) {
+          const isOverdue = (task.dueDate < todayStr) && task.status !== "completed";
+          const dateBadgeClass = isOverdue ? "badge-overdue" : "badge-date";
+          dateBadge = `<span class="badge ${dateBadgeClass}">📅 Due: ${formatDateOnly(task.dueDate)}</span>`;
+        }
 
         item.innerHTML = `
           <div class="task-head">
             <div style="flex: 1;">
-              <span class="badge ${badgeClass}">${statusLabel}</span>
+              <div>
+                <span class="badge badge-${task.status}">${statusLabel}</span>
+                ${dateBadge}
+              </div>
               <div class="task-title ${task.status === 'completed' ? 'completed' : ''}">${escapeHtml(task.title)}</div>
               ${task.description ? `<div class="task-desc">${escapeHtml(task.description)}</div>` : ''}
             </div>
@@ -677,31 +694,25 @@
         taskList.appendChild(item);
       });
 
-      // Status change listener
+      // Listeners
       document.querySelectorAll(".status-select").forEach(sel => {
         sel.addEventListener("change", async (e) => {
-          const taskId = e.target.dataset.id;
-          const newStatus = e.target.value;
-          await updateDoc(doc(db, `users/${currentUser.uid}/tasks`, taskId), { 
-            status: newStatus,
-            modifiedAt: Date.now()
+          await updateDoc(doc(db, `users/${currentUser.uid}/tasks`, e.target.dataset.id), { 
+            status: e.target.value, modifiedAt: Date.now() 
           });
         });
       });
 
-      // Delete listener
       document.querySelectorAll(".btn-del").forEach(btn => {
         btn.addEventListener("click", async (e) => {
-          const taskId = e.target.dataset.id;
           if (confirm("Are you sure you want to delete this task?")) {
-            await deleteDoc(doc(db, `users/${currentUser.uid}/tasks`, taskId));
+            await deleteDoc(doc(db, `users/${currentUser.uid}/tasks`, e.target.dataset.id));
           }
         });
       });
     });
   }
 
-  // Prevent XSS
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.innerText = text;
